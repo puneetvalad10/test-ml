@@ -28,8 +28,8 @@ multiprocessing
 Model
 pandas
 # metrics
-from sklearn.metrics
+sklearn.metrics
 # model reasoning
-from captum.attr
+captum.attr
 # word-level tokenizer
 tokenizers
