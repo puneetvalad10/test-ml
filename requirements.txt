@@ -1,5 +1,4 @@
 future
-argparse==1.4.0
 glob
 logging
 os
