@@ -2,7 +2,7 @@ future
 argparse
 glob2
 os-sys
-pickle
+pickle5
 random
 re
 numpy
