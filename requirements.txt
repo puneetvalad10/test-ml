@@ -3,7 +3,6 @@ argparse
 glob2
 pickle5
 random2
-re2
 numpy
 torch
 python-math
