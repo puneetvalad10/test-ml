@@ -8,7 +8,7 @@ os
 pickle
 random
 re
-numpy as np
+numpy
 torch
 math
 DataLoader
@@ -26,7 +26,7 @@ RobertaTokenizer
 tqdm
 multiprocessing
 Model
-pandas as pd
+pandas
 # metrics
 from sklearn.metrics
 # model reasoning
