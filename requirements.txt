@@ -1,7 +1,6 @@
 future
 argparse
 glob2
-#logging==0.4.9.6
 os
 pickle
 random
@@ -15,9 +14,6 @@ transformers
 tqdm
 multiprocessing
 pandas
-# metrics
 sklearn.metrics
-# model reasoning
 captum.attr
-# word-level tokenizer
 tokenizers
