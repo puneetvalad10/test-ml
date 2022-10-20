@@ -16,3 +16,4 @@ pandas
 scikit-metrics
 captum
 tokenizers
+spacy
