@@ -1,0 +1,852 @@
+index,Access Gained,Attack Origin,Authentication Required,Availability,CVE ID,CVE Page,CWE ID,Complexity,Confidentiality,Integrity,Known Exploits,Publish Date,Score,Summary,Update Date,Vulnerability Classification,add_lines,codeLink,commit_id,commit_message,del_lines,file_name,files_changed,func_after,func_before,lang,lines_after,lines_before,parentID,patch,project,project_after,project_before,target,vul_func_with_fix,processed_func,flaw_line,flaw_line_index
+178042,None,Remote,Not required,Partial,CVE-2011-4718,https://www.cvedetails.com/cve/CVE-2011-4718/,CWE-264,Medium,Partial,Partial,,2013-08-13,6.8,Session fixation vulnerability in the Sessions subsystem in PHP before 5.5.2 allows remote attackers to hijack web sessions by specifying a session ID.,2013-08-13,,17,https://git.php.net/?p=php-src.git;a=commit;h=25e8fcc88fa20dc9d4c47184471003f436927cde,25e8fcc88fa20dc9d4c47184471003f436927cde,,2,,," static char *ps_files_path_create(char *buf, size_t buflen, ps_files *data, const char *key)
+ {
+{
+	size_t len;
+	const char *p;
+	char c;
+	int ret = 1;
+
+	for (p = key; (c = *p); p++) {
+		/* valid characters are a..z,A..Z,0..9 */
+		if (!((c >= 'a' && c <= 'z')
+				|| (c >= 'A' && c <= 'Z')
+				|| (c >= '0' && c <= '9')
+				|| c == ','
+				|| c == '-')) {
+			ret = 0;
+			break;
+		}
+	}
+
+	len = p - key;
+
+	/* Somewhat arbitrary length limit here, but should be way more than
+	   anyone needs and avoids file-level warnings later on if we exceed MAX_PATH */
+	if (len == 0 || len > 128) {
+		ret = 0;
+	}
+
+	return ret;
+}
+
+static char *ps_files_path_create(char *buf, size_t buflen, ps_files *data, const char *key)
+{
+	size_t key_len;
+	const char *p;
+	int i;
+	int n;
+
+	key_len = strlen(key);
+	if (key_len <= data->dirdepth ||
+		buflen < (strlen(data->basedir) + 2 * data->dirdepth + key_len + 5 + sizeof(FILE_PREFIX))) {
+		return NULL;
+	}
+
+	p = key;
+	memcpy(buf, data->basedir, data->basedir_len);
+	n = data->basedir_len;
+	buf[n++] = PHP_DIR_SEPARATOR;
+	for (i = 0; i < (int)data->dirdepth; i++) {
+		buf[n++] = *p++;
+		buf[n++] = PHP_DIR_SEPARATOR;
+	}
+	memcpy(buf + n, FILE_PREFIX, sizeof(FILE_PREFIX) - 1);
+	n += sizeof(FILE_PREFIX) - 1;
+	memcpy(buf + n, key, key_len);
+	n += key_len;
+ 
+                ps_files_close(data);
+ 
+               if (php_session_valid_key(key) == FAILURE) {
+                        php_error_docref(NULL TSRMLS_CC, E_WARNING, ""The session id is too long or contains illegal characters, valid characters are a-z, A-Z, 0-9 and '-,'"");
+                        return;
+                }
+
+                if (!ps_files_path_create(buf, sizeof(buf), data, key)) {
+                        return;
+                }
+	if (data->fd != -1) {
+#ifdef PHP_WIN32
+		/* On Win32 locked files that are closed without being explicitly unlocked
+		   will be unlocked only when ""system resources become available"". */
+		flock(data->fd, LOCK_UN);
+#endif
+		close(data->fd);
+		data->fd = -1;
+	}
+}
+
+static void ps_files_open(ps_files *data, const char *key TSRMLS_DC)
+{
+	char buf[MAXPATHLEN];
+
+	if (data->fd < 0 || !data->lastkey || strcmp(key, data->lastkey)) {
+		if (data->lastkey) {
+			efree(data->lastkey);
+			data->lastkey = NULL;
+		}
+
+		ps_files_close(data);
+
+		if (!ps_files_valid_key(key)) {
+			php_error_docref(NULL TSRMLS_CC, E_WARNING, ""The session id is too long or contains illegal characters, valid characters are a-z, A-Z, 0-9 and '-,'"");
+			PS(invalid_session_id) = 1;
+			return;
+		}
+		if (!ps_files_path_create(buf, sizeof(buf), data, key)) {
+			return;
+		}
+
+		data->lastkey = estrdup(key);
+
+		data->fd = VCWD_OPEN_MODE(buf, O_CREAT | O_RDWR | O_BINARY, data->filemode);
+
+		if (data->fd != -1) {
+#ifndef PHP_WIN32
+			/* check to make sure that the opened file is not a symlink, linking to data outside of allowable dirs */
+			if (PG(open_basedir)) {
+				struct stat sbuf;
+
+				if (fstat(data->fd, &sbuf)) {
+					close(data->fd);
+					return;
+				}
+				if (S_ISLNK(sbuf.st_mode) && php_check_open_basedir(buf TSRMLS_CC)) {
+					close(data->fd);
+					return;
+				}
+			}
+#endif
+			flock(data->fd, LOCK_EX);
+
+#ifdef F_SETFD
+# ifndef FD_CLOEXEC
+#  define FD_CLOEXEC 1
+# endif
+			if (fcntl(data->fd, F_SETFD, FD_CLOEXEC)) {
+				php_error_docref(NULL TSRMLS_CC, E_WARNING, ""fcntl(%d, F_SETFD, FD_CLOEXEC) failed: %s (%d)"", data->fd, strerror(errno), errno);
+			}
+#endif
+		} else {
+			php_error_docref(NULL TSRMLS_CC, E_WARNING, ""open(%s, O_RDWR) failed: %s (%d)"", buf, strerror(errno), errno);
+		}
+	}
+}
+
+static int ps_files_cleanup_dir(const char *dirname, int maxlifetime TSRMLS_DC)
+{
+	DIR *dir;
+	char dentry[sizeof(struct dirent) + MAXPATHLEN];
+	struct dirent *entry = (struct dirent *) &dentry;
+	struct stat sbuf;
+	char buf[MAXPATHLEN];
+	time_t now;
+	int nrdels = 0;
+	size_t dirname_len;
+
+	dir = opendir(dirname);
+	if (!dir) {
+		php_error_docref(NULL TSRMLS_CC, E_NOTICE, ""ps_files_cleanup_dir: opendir(%s) failed: %s (%d)"", dirname, strerror(errno), errno);
+		return (0);
+	}
+
+	time(&now);
+
+        return (nrdels);
+ }
+ 
+static int ps_files_key_exists(ps_files *data, const char *key TSRMLS_DC)
+{
+       char buf[MAXPATHLEN];
+       struct stat sbuf;
+
+       if (!key || !ps_files_path_create(buf, sizeof(buf), data, key)) {
+               return FAILURE;
+       }
+       if (VCWD_STAT(buf, &sbuf)) {
+               return FAILURE;
+       }
+       return SUCCESS;
+}
+
+
+ #define PS_FILES_DATA ps_files *data = PS_GET_MOD_DATA()
+ 
+ PS_OPEN_FUNC(files)
+						(now - sbuf.st_mtime) > maxlifetime) {
+					VCWD_UNLINK(buf);
+					nrdels++;
+				}
+			}
+"," static char *ps_files_path_create(char *buf, size_t buflen, ps_files *data, const char *key)
+ {
+{
+	size_t len;
+	const char *p;
+	char c;
+	int ret = 1;
+
+	for (p = key; (c = *p); p++) {
+		/* valid characters are a..z,A..Z,0..9 */
+		if (!((c >= 'a' && c <= 'z')
+				|| (c >= 'A' && c <= 'Z')
+				|| (c >= '0' && c <= '9')
+				|| c == ','
+				|| c == '-')) {
+			ret = 0;
+			break;
+		}
+	}
+
+	len = p - key;
+
+	/* Somewhat arbitrary length limit here, but should be way more than
+	   anyone needs and avoids file-level warnings later on if we exceed MAX_PATH */
+	if (len == 0 || len > 128) {
+		ret = 0;
+	}
+
+	return ret;
+}
+
+static char *ps_files_path_create(char *buf, size_t buflen, ps_files *data, const char *key)
+{
+	size_t key_len;
+	const char *p;
+	int i;
+	int n;
+
+	key_len = strlen(key);
+	if (key_len <= data->dirdepth ||
+		buflen < (strlen(data->basedir) + 2 * data->dirdepth + key_len + 5 + sizeof(FILE_PREFIX))) {
+		return NULL;
+	}
+
+	p = key;
+	memcpy(buf, data->basedir, data->basedir_len);
+	n = data->basedir_len;
+	buf[n++] = PHP_DIR_SEPARATOR;
+	for (i = 0; i < (int)data->dirdepth; i++) {
+		buf[n++] = *p++;
+		buf[n++] = PHP_DIR_SEPARATOR;
+	}
+	memcpy(buf + n, FILE_PREFIX, sizeof(FILE_PREFIX) - 1);
+	n += sizeof(FILE_PREFIX) - 1;
+	memcpy(buf + n, key, key_len);
+	n += key_len;
+ 
+                ps_files_close(data);
+ 
+               if (!ps_files_valid_key(key)) {
+                        php_error_docref(NULL TSRMLS_CC, E_WARNING, ""The session id is too long or contains illegal characters, valid characters are a-z, A-Z, 0-9 and '-,'"");
+                       PS(invalid_session_id) = 1;
+                        return;
+                }
+                if (!ps_files_path_create(buf, sizeof(buf), data, key)) {
+                        return;
+                }
+	if (data->fd != -1) {
+#ifdef PHP_WIN32
+		/* On Win32 locked files that are closed without being explicitly unlocked
+		   will be unlocked only when ""system resources become available"". */
+		flock(data->fd, LOCK_UN);
+#endif
+		close(data->fd);
+		data->fd = -1;
+	}
+}
+
+static void ps_files_open(ps_files *data, const char *key TSRMLS_DC)
+{
+	char buf[MAXPATHLEN];
+
+	if (data->fd < 0 || !data->lastkey || strcmp(key, data->lastkey)) {
+		if (data->lastkey) {
+			efree(data->lastkey);
+			data->lastkey = NULL;
+		}
+
+		ps_files_close(data);
+
+		if (!ps_files_valid_key(key)) {
+			php_error_docref(NULL TSRMLS_CC, E_WARNING, ""The session id is too long or contains illegal characters, valid characters are a-z, A-Z, 0-9 and '-,'"");
+			PS(invalid_session_id) = 1;
+			return;
+		}
+		if (!ps_files_path_create(buf, sizeof(buf), data, key)) {
+			return;
+		}
+
+		data->lastkey = estrdup(key);
+
+		data->fd = VCWD_OPEN_MODE(buf, O_CREAT | O_RDWR | O_BINARY, data->filemode);
+
+		if (data->fd != -1) {
+#ifndef PHP_WIN32
+			/* check to make sure that the opened file is not a symlink, linking to data outside of allowable dirs */
+			if (PG(open_basedir)) {
+				struct stat sbuf;
+
+				if (fstat(data->fd, &sbuf)) {
+					close(data->fd);
+					return;
+				}
+				if (S_ISLNK(sbuf.st_mode) && php_check_open_basedir(buf TSRMLS_CC)) {
+					close(data->fd);
+					return;
+				}
+			}
+#endif
+			flock(data->fd, LOCK_EX);
+
+#ifdef F_SETFD
+# ifndef FD_CLOEXEC
+#  define FD_CLOEXEC 1
+# endif
+			if (fcntl(data->fd, F_SETFD, FD_CLOEXEC)) {
+				php_error_docref(NULL TSRMLS_CC, E_WARNING, ""fcntl(%d, F_SETFD, FD_CLOEXEC) failed: %s (%d)"", data->fd, strerror(errno), errno);
+			}
+#endif
+		} else {
+			php_error_docref(NULL TSRMLS_CC, E_WARNING, ""open(%s, O_RDWR) failed: %s (%d)"", buf, strerror(errno), errno);
+		}
+	}
+}
+
+static int ps_files_cleanup_dir(const char *dirname, int maxlifetime TSRMLS_DC)
+{
+	DIR *dir;
+	char dentry[sizeof(struct dirent) + MAXPATHLEN];
+	struct dirent *entry = (struct dirent *) &dentry;
+	struct stat sbuf;
+	char buf[MAXPATHLEN];
+	time_t now;
+	int nrdels = 0;
+	size_t dirname_len;
+
+	dir = opendir(dirname);
+	if (!dir) {
+		php_error_docref(NULL TSRMLS_CC, E_NOTICE, ""ps_files_cleanup_dir: opendir(%s) failed: %s (%d)"", dirname, strerror(errno), errno);
+		return (0);
+	}
+
+	time(&now);
+
+        return (nrdels);
+ }
+ 
+ #define PS_FILES_DATA ps_files *data = PS_GET_MOD_DATA()
+ 
+ PS_OPEN_FUNC(files)
+						(now - sbuf.st_mtime) > maxlifetime) {
+					VCWD_UNLINK(buf);
+					nrdels++;
+				}
+			}
+",C,"               if (php_session_valid_key(key) == FAILURE) {
+
+static int ps_files_key_exists(ps_files *data, const char *key TSRMLS_DC)
+{
+       char buf[MAXPATHLEN];
+       struct stat sbuf;
+
+       if (!key || !ps_files_path_create(buf, sizeof(buf), data, key)) {
+               return FAILURE;
+       }
+       if (VCWD_STAT(buf, &sbuf)) {
+               return FAILURE;
+       }
+       return SUCCESS;
+}
+
+
+","               if (!ps_files_valid_key(key)) {
+                       PS(invalid_session_id) = 1;
+",c793a6569013f9ab46f2cd7331cc1a04aa42cbed,"@@ -61,40 +61,9 @@ typedef struct {
+ } ps_files;
+ 
+ ps_module ps_mod_files = {
+-       PS_MOD(files)
++       PS_MOD_SID(files)
+ };
+ 
+-/* If you change the logic here, please also update the error message in
+- * ps_files_open() appropriately */
+-static int ps_files_valid_key(const char *key)
+-{
+-       size_t len;
+-       const char *p;
+-       char c;
+-       int ret = 1;
+-
+-       for (p = key; (c = *p); p++) {
+-               /* valid characters are a..z,A..Z,0..9 */
+-               if (!((c >= 'a' && c <= 'z')
+-                               || (c >= 'A' && c <= 'Z')
+-                               || (c >= '0' && c <= '9')
+-                               || c == ','
+-                               || c == '-')) {
+-                       ret = 0;
+-                       break;
+-               }
+-       }
+-
+-       len = p - key;
+-
+-       /* Somewhat arbitrary length limit here, but should be way more than
+-          anyone needs and avoids file-level warnings later on if we exceed MAX_PATH */
+-       if (len == 0 || len > 128) {
+-               ret = 0;
+-       }
+-
+-       return ret;
+-}
+ 
+ static char *ps_files_path_create(char *buf, size_t buflen, ps_files *data, const char *key)
+ {
+@@ -155,11 +124,11 @@ static void ps_files_open(ps_files *data, const char *key TSRMLS_DC)
+ 
+                ps_files_close(data);
+ 
+-               if (!ps_files_valid_key(key)) {
++               if (php_session_valid_key(key) == FAILURE) {
+                        php_error_docref(NULL TSRMLS_CC, E_WARNING, ""The session id is too long or contains illegal characters, valid characters are a-z, A-Z, 0-9 and '-,'"");
+-                       PS(invalid_session_id) = 1;
+                        return;
+                }
++
+                if (!ps_files_path_create(buf, sizeof(buf), data, key)) {
+                        return;
+                }
+@@ -253,6 +222,21 @@ static int ps_files_cleanup_dir(const char *dirname, int maxlifetime TSRMLS_DC)
+        return (nrdels);
+ }
+ 
++static int ps_files_key_exists(ps_files *data, const char *key TSRMLS_DC)
++{
++       char buf[MAXPATHLEN];
++       struct stat sbuf;
++
++       if (!key || !ps_files_path_create(buf, sizeof(buf), data, key)) {
++               return FAILURE;
++       }
++       if (VCWD_STAT(buf, &sbuf)) {
++               return FAILURE;
++       }
++       return SUCCESS;
++}
++
++
+ #define PS_FILES_DATA ps_files *data = PS_GET_MOD_DATA()
+ 
+ PS_OPEN_FUNC(files)
+@@ -342,6 +326,24 @@ PS_READ_FUNC(files)
+        struct stat sbuf;
+        PS_FILES_DATA;
+ 
++       /* If strict mode, check session id existence */
++       if (PS(use_strict_mode) &&
++               ps_files_key_exists(data, key TSRMLS_CC) == FAILURE) {
++               /* key points to PS(id), but cannot change here. */
++               if (key) {
++                       efree(PS(id));
++                       PS(id) = NULL;
++               }
++               PS(id) = PS(mod)->s_create_sid((void **)&data, NULL TSRMLS_CC);
++               if (!PS(id)) {
++                       return FAILURE;
++               }
++               php_session_reset_id(TSRMLS_C);
++               if (PS(use_cookies)) {
++                       PS(send_cookie) = 1;
++               }
++       }
++
+        ps_files_open(data, key TSRMLS_CC);
+        if (data->fd < 0) {
+                return FAILURE;
+@@ -454,6 +456,17 @@ PS_GC_FUNC(files)
+        return SUCCESS;
+ }
+ 
++PS_CREATE_SID_FUNC(files)
++{
++       char *sid;
++       PS_FILES_DATA;
++
++       sid = php_session_create_id((void **)&data, newlen TSRMLS_CC);
++
++       return sid;
++}
++
++
+ /*
+  * Local variables:
+  * tab-width: 4",php,https://git.php.net/?p=php-src.git;a=blob;f=ext/session/mod_files.c;h=e9dc25a4b8ab60b31bfb41202ae3acb1890b1c30;hb=25e8fcc88fa20dc9d4c47184471003f436927cde,https://git.php.net/?p=php-src.git;a=blob;f=ext/session/mod_files.c;h=053c617dec232634059b0c374fee6b15e73c708c,1," static char *ps_files_path_create(char *buf, size_t buflen, ps_files *data, const char *key)
+ {
+{
+	size_t len;
+	const char *p;
+	char c;
+	int ret = 1;
+
+	for (p = key; (c = *p); p++) {
+		/* valid characters are a..z,A..Z,0..9 */
+		if (!((c >= 'a' && c <= 'z')
+				|| (c >= 'A' && c <= 'Z')
+				|| (c >= '0' && c <= '9')
+				|| c == ','
+				|| c == '-')) {
+			ret = 0;
+			break;
+		}
+	}
+
+	len = p - key;
+
+	/* Somewhat arbitrary length limit here, but should be way more than
+	   anyone needs and avoids file-level warnings later on if we exceed MAX_PATH */
+	if (len == 0 || len > 128) {
+		ret = 0;
+	}
+
+	return ret;
+}
+
+static char *ps_files_path_create(char *buf, size_t buflen, ps_files *data, const char *key)
+{
+	size_t key_len;
+	const char *p;
+	int i;
+	int n;
+
+	key_len = strlen(key);
+	if (key_len <= data->dirdepth ||
+		buflen < (strlen(data->basedir) + 2 * data->dirdepth + key_len + 5 + sizeof(FILE_PREFIX))) {
+		return NULL;
+	}
+
+	p = key;
+	memcpy(buf, data->basedir, data->basedir_len);
+	n = data->basedir_len;
+	buf[n++] = PHP_DIR_SEPARATOR;
+	for (i = 0; i < (int)data->dirdepth; i++) {
+		buf[n++] = *p++;
+		buf[n++] = PHP_DIR_SEPARATOR;
+	}
+	memcpy(buf + n, FILE_PREFIX, sizeof(FILE_PREFIX) - 1);
+	n += sizeof(FILE_PREFIX) - 1;
+	memcpy(buf + n, key, key_len);
+	n += key_len;
+ 
+                ps_files_close(data);
+ 
+//flaw_line_below:
+               if (!ps_files_valid_key(key)) {
+//fix_flaw_line_below:
+//               if (php_session_valid_key(key) == FAILURE) {
+                        php_error_docref(NULL TSRMLS_CC, E_WARNING, ""The session id is too long or contains illegal characters, valid characters are a-z, A-Z, 0-9 and '-,'"");
+//flaw_line_below:
+                       PS(invalid_session_id) = 1;
+                        return;
+                }
+//fix_flaw_line_below:
+//
+                if (!ps_files_path_create(buf, sizeof(buf), data, key)) {
+                        return;
+                }
+	if (data->fd != -1) {
+#ifdef PHP_WIN32
+		/* On Win32 locked files that are closed without being explicitly unlocked
+		   will be unlocked only when ""system resources become available"". */
+		flock(data->fd, LOCK_UN);
+#endif
+		close(data->fd);
+		data->fd = -1;
+	}
+}
+
+static void ps_files_open(ps_files *data, const char *key TSRMLS_DC)
+{
+	char buf[MAXPATHLEN];
+
+	if (data->fd < 0 || !data->lastkey || strcmp(key, data->lastkey)) {
+		if (data->lastkey) {
+			efree(data->lastkey);
+			data->lastkey = NULL;
+		}
+
+		ps_files_close(data);
+
+		if (!ps_files_valid_key(key)) {
+			php_error_docref(NULL TSRMLS_CC, E_WARNING, ""The session id is too long or contains illegal characters, valid characters are a-z, A-Z, 0-9 and '-,'"");
+			PS(invalid_session_id) = 1;
+			return;
+		}
+		if (!ps_files_path_create(buf, sizeof(buf), data, key)) {
+			return;
+		}
+
+		data->lastkey = estrdup(key);
+
+		data->fd = VCWD_OPEN_MODE(buf, O_CREAT | O_RDWR | O_BINARY, data->filemode);
+
+		if (data->fd != -1) {
+#ifndef PHP_WIN32
+			/* check to make sure that the opened file is not a symlink, linking to data outside of allowable dirs */
+			if (PG(open_basedir)) {
+				struct stat sbuf;
+
+				if (fstat(data->fd, &sbuf)) {
+					close(data->fd);
+					return;
+				}
+				if (S_ISLNK(sbuf.st_mode) && php_check_open_basedir(buf TSRMLS_CC)) {
+					close(data->fd);
+					return;
+				}
+			}
+#endif
+			flock(data->fd, LOCK_EX);
+
+#ifdef F_SETFD
+# ifndef FD_CLOEXEC
+#  define FD_CLOEXEC 1
+# endif
+			if (fcntl(data->fd, F_SETFD, FD_CLOEXEC)) {
+				php_error_docref(NULL TSRMLS_CC, E_WARNING, ""fcntl(%d, F_SETFD, FD_CLOEXEC) failed: %s (%d)"", data->fd, strerror(errno), errno);
+			}
+#endif
+		} else {
+			php_error_docref(NULL TSRMLS_CC, E_WARNING, ""open(%s, O_RDWR) failed: %s (%d)"", buf, strerror(errno), errno);
+		}
+	}
+}
+
+static int ps_files_cleanup_dir(const char *dirname, int maxlifetime TSRMLS_DC)
+{
+	DIR *dir;
+	char dentry[sizeof(struct dirent) + MAXPATHLEN];
+	struct dirent *entry = (struct dirent *) &dentry;
+	struct stat sbuf;
+	char buf[MAXPATHLEN];
+	time_t now;
+	int nrdels = 0;
+	size_t dirname_len;
+
+	dir = opendir(dirname);
+	if (!dir) {
+		php_error_docref(NULL TSRMLS_CC, E_NOTICE, ""ps_files_cleanup_dir: opendir(%s) failed: %s (%d)"", dirname, strerror(errno), errno);
+		return (0);
+	}
+
+	time(&now);
+
+        return (nrdels);
+ }
+ 
+//fix_flaw_line_below:
+//static int ps_files_key_exists(ps_files *data, const char *key TSRMLS_DC)
+//fix_flaw_line_below:
+//{
+//fix_flaw_line_below:
+//       char buf[MAXPATHLEN];
+//fix_flaw_line_below:
+//       struct stat sbuf;
+//fix_flaw_line_below:
+//
+//fix_flaw_line_below:
+//       if (!key || !ps_files_path_create(buf, sizeof(buf), data, key)) {
+//fix_flaw_line_below:
+//               return FAILURE;
+//fix_flaw_line_below:
+//       }
+//fix_flaw_line_below:
+//       if (VCWD_STAT(buf, &sbuf)) {
+//fix_flaw_line_below:
+//               return FAILURE;
+//fix_flaw_line_below:
+//       }
+//fix_flaw_line_below:
+//       return SUCCESS;
+//fix_flaw_line_below:
+//}
+//fix_flaw_line_below:
+//
+//fix_flaw_line_below:
+//
+ #define PS_FILES_DATA ps_files *data = PS_GET_MOD_DATA()
+ 
+ PS_OPEN_FUNC(files)
+						(now - sbuf.st_mtime) > maxlifetime) {
+					VCWD_UNLINK(buf);
+					nrdels++;
+				}
+			}
+","static char *ps_files_path_create(char *buf, size_t buflen, ps_files *data, const char *key)
+{
+{
+size_t len;
+const char *p;
+char c;
+int ret = 1;
+
+for (p = key; (c = *p); p++) {
+/* valid characters are a..z,A..Z,0..9 */
+if (!((c >= 'a' && c <= 'z')
+|| (c >= 'A' && c <= 'Z')
+|| (c >= '0' && c <= '9')
+|| c == ','
+|| c == '-')) {
+ret = 0;
+break;
+}
+}
+
+len = p - key;
+
+/* Somewhat arbitrary length limit here, but should be way more than
+anyone needs and avoids file-level warnings later on if we exceed MAX_PATH */
+if (len == 0 || len > 128) {
+ret = 0;
+}
+
+return ret;
+}
+
+static char *ps_files_path_create(char *buf, size_t buflen, ps_files *data, const char *key)
+{
+size_t key_len;
+const char *p;
+int i;
+int n;
+
+key_len = strlen(key);
+if (key_len <= data->dirdepth ||
+buflen < (strlen(data->basedir) + 2 * data->dirdepth + key_len + 5 + sizeof(FILE_PREFIX))) {
+return NULL;
+}
+
+p = key;
+memcpy(buf, data->basedir, data->basedir_len);
+n = data->basedir_len;
+buf[n++] = PHP_DIR_SEPARATOR;
+for (i = 0; i < (int)data->dirdepth; i++) {
+buf[n++] = *p++;
+buf[n++] = PHP_DIR_SEPARATOR;
+}
+memcpy(buf + n, FILE_PREFIX, sizeof(FILE_PREFIX) - 1);
+n += sizeof(FILE_PREFIX) - 1;
+memcpy(buf + n, key, key_len);
+n += key_len;
+
+ps_files_close(data);
+
+               if (!ps_files_valid_key(key)) {
+php_error_docref(NULL TSRMLS_CC, E_WARNING, ""The session id is too long or contains illegal characters, valid characters are a-z, A-Z, 0-9 and '-,'"");
+                       PS(invalid_session_id) = 1;
+return;
+}
+if (!ps_files_path_create(buf, sizeof(buf), data, key)) {
+return;
+}
+if (data->fd != -1) {
+#ifdef PHP_WIN32
+/* On Win32 locked files that are closed without being explicitly unlocked
+will be unlocked only when ""system resources become available"". */
+flock(data->fd, LOCK_UN);
+#endif
+close(data->fd);
+data->fd = -1;
+}
+}
+
+static void ps_files_open(ps_files *data, const char *key TSRMLS_DC)
+{
+char buf[MAXPATHLEN];
+
+if (data->fd < 0 || !data->lastkey || strcmp(key, data->lastkey)) {
+if (data->lastkey) {
+efree(data->lastkey);
+data->lastkey = NULL;
+}
+
+ps_files_close(data);
+
+if (!ps_files_valid_key(key)) {
+php_error_docref(NULL TSRMLS_CC, E_WARNING, ""The session id is too long or contains illegal characters, valid characters are a-z, A-Z, 0-9 and '-,'"");
+PS(invalid_session_id) = 1;
+return;
+}
+if (!ps_files_path_create(buf, sizeof(buf), data, key)) {
+return;
+}
+
+data->lastkey = estrdup(key);
+
+data->fd = VCWD_OPEN_MODE(buf, O_CREAT | O_RDWR | O_BINARY, data->filemode);
+
+if (data->fd != -1) {
+#ifndef PHP_WIN32
+/* check to make sure that the opened file is not a symlink, linking to data outside of allowable dirs */
+if (PG(open_basedir)) {
+struct stat sbuf;
+
+if (fstat(data->fd, &sbuf)) {
+close(data->fd);
+return;
+}
+if (S_ISLNK(sbuf.st_mode) && php_check_open_basedir(buf TSRMLS_CC)) {
+close(data->fd);
+return;
+}
+}
+#endif
+flock(data->fd, LOCK_EX);
+
+#ifdef F_SETFD
+# ifndef FD_CLOEXEC
+#  define FD_CLOEXEC 1
+# endif
+if (fcntl(data->fd, F_SETFD, FD_CLOEXEC)) {
+php_error_docref(NULL TSRMLS_CC, E_WARNING, ""fcntl(%d, F_SETFD, FD_CLOEXEC) failed: %s (%d)"", data->fd, strerror(errno), errno);
+}
+#endif
+} else {
+php_error_docref(NULL TSRMLS_CC, E_WARNING, ""open(%s, O_RDWR) failed: %s (%d)"", buf, strerror(errno), errno);
+}
+}
+}
+
+static int ps_files_cleanup_dir(const char *dirname, int maxlifetime TSRMLS_DC)
+{
+DIR *dir;
+char dentry[sizeof(struct dirent) + MAXPATHLEN];
+struct dirent *entry = (struct dirent *) &dentry;
+struct stat sbuf;
+char buf[MAXPATHLEN];
+time_t now;
+int nrdels = 0;
+size_t dirname_len;
+
+dir = opendir(dirname);
+if (!dir) {
+php_error_docref(NULL TSRMLS_CC, E_NOTICE, ""ps_files_cleanup_dir: opendir(%s) failed: %s (%d)"", dirname, strerror(errno), errno);
+return (0);
+}
+
+time(&now);
+
+return (nrdels);
+}
+
+#define PS_FILES_DATA ps_files *data = PS_GET_MOD_DATA()
+
+PS_OPEN_FUNC(files)
+(now - sbuf.st_mtime) > maxlifetime) {
+VCWD_UNLINK(buf);
+nrdels++;
+}
+}
+",               if (!ps_files_valid_key(key)) {/~/                       PS(invalid_session_id) = 1;,"59,61"
