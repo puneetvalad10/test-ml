@@ -1,7 +1,7 @@
 future
 argparse
 glob2
-logging
+logging==0.4.9.6
 os
 pickle
 random
