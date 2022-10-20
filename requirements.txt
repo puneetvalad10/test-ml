@@ -1,7 +1,7 @@
 future
 argparse
 glob2
-os
+os-sys
 pickle
 random
 re
