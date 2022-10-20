@@ -1,6 +1,4 @@
-absolute_import
-division
-print_function
+__future__
 argparse
 glob
 logging
@@ -11,21 +9,11 @@ re
 numpy
 torch
 math
-DataLoader
-Dataset
-SequentialSampler
-RandomSampler
-TensorDataset
-DistributedSampler
-WEIGHTS_NAME
-AdamW
-get_linear_schedule_with_warmup
-RobertaConfig
-RobertaForSequenceClassification
-RobertaTokenizer
+torch.utils.data
+torch.utils.data.distributed
+transformers
 tqdm
 multiprocessing
-Model
 pandas
 # metrics
 sklearn.metrics
